@@ -1,27 +1,28 @@
-# BTS7960 (IBT-2) Dual PWM Engine Driver for Zephyr RTOS
+# BTS7960 (IBT-2) Dual PWM Engine Driver for ESP-IDF
 
 *Read in other languages: [Português](README.pt-br.md)*
 
-This module provides a modular and optimized static C driver for controlling DC motors using the **BTS7960** high-current H-bridge (commonly sold as the **IBT-2** interface board).
+This module provides a modular and optimized static C driver for controlling DC motors using the **BTS7960** high-current H-bridge (commonly sold as the **IBT-2** interface board) on **ESP32-S3** under **ESP-IDF**.
 
-Control is performed in **Dual PWM (Slow-Decay / Active Dynamic Braking)** mode, utilizing STMicroelectronics Low-Layer (LL) macros for maximum processing and switching speed, with native support for thread-safety.
+Control is performed in **Dual PWM (Slow-Decay / Active Dynamic Braking)** mode, utilizing the ESP32-S3's native **MCPWM** peripheral for high resolution and switching speed, with native support for thread-safety.
 
 ### Key Performance Features:
-* **Native Dynamic Resolution:** The speed input (from `-100.0f` to `100.0f`) is mapped directly to the hardware timer's clock cycles, utilizing the maximum physical precision (no intermediate logical steps limited to 10 or 12 bits).
-* **Boot Diagnostics:** During boot, `engine_driver_init` prints the configured physical frequency in Hz and the actual hardware resolution in steps to the console. A warning (`WARNING`) is issued if the resolution drops below 1024 steps to ensure optimal control loop performance.
+* **High Resolution:** The timer is configured with an 80 MHz clock resolution (the maximum hardware timer frequency on the ESP32-S3), yielding **4000 steps of resolution** at a 20 kHz frequency.
+* **Software Dead-time:** Protects the H-bridge from shoot-through during direction changes with a precise 50 us transition delay (`esp_rom_delay_us(50)`).
+* **Flexible Thread-safety:** Thread safety is compile-time selectable using `CONFIG_ENGINE_THREAD_SAFE` via Kconfig/menuconfig.
 
 ---
 
-## 🔌 Suggested Pinout
+## 🔌 Suggested Pinout (ESP32-S3)
 
-Below is the recommended electrical wiring diagram between the **BTS7960 (IBT-2)** module and the **WeAct STM32G431 Core Board** development board:
+Below is the recommended wiring diagram between the **BTS7960 (IBT-2)** module and the **ESP32-S3 DevKit**:
 
-| IBT-2 Pin (Control Side) | Signal | STM32G431 Pin | Description |
+| IBT-2 Pin (Control Side) | Signal | ESP32-S3 Pin | Description |
 | :--- | :--- | :--- | :--- |
-| **1 (RPWM)** | Clockwise signal input | **PA0** | Timer `TIM2` Channel 1 (PWM switching) |
-| **2 (LPWM)** | Counter-clockwise signal input | **PA1** | Timer `TIM2` Channel 2 (PWM switching) |
-| **3 (R_EN)** | Clockwise direction Enable | **PA4** | Enable GPIO (Active HIGH) |
-| **4 (L_EN)** | Counter-clockwise direction Enable | **PA4** | Enable GPIO (Active HIGH, connected to R_EN) |
+| **1 (RPWM)** | Clockwise PWM input | **GPIO 1** | MCPWM Generator 0A |
+| **2 (LPWM)** | Counter-clockwise PWM input | **GPIO 2** | MCPWM Generator 0B |
+| **3 (R_EN)** | Clockwise Direction Enable | **GPIO 3** | Enable GPIO (Active HIGH, connected to L_EN) |
+| **4 (L_EN)** | Counter-clockwise Direction Enable | **GPIO 3** | Enable GPIO (Active HIGH, connected to R_EN) |
 | **5 (R_IS)** | Clockwise current alarm | *Not connected* | Optional analog output for overcurrent reading |
 | **6 (L_IS)** | Counter-clockwise current alarm | *Not connected* | Optional analog output for overcurrent reading |
 | **7 (VCC)** | Buffer logic voltage | **3.3V** | Powers the module's input buffer logic (74HC244) |
@@ -29,8 +30,8 @@ Below is the recommended electrical wiring diagram between the **BTS7960 (IBT-2)
 
 > [!WARNING]
 > **Logic Compatibility (3.3V vs 5V):**
-> The IBT-2 module features a CMOS input buffer chip (`74HC244`). If you power the module's **7 (VCC)** pin with 5V, the minimum threshold to recognize a HIGH signal is $3.5\text{V}$, causing failure or unstable behavior since the STM32 outputs are $3.3\text{V}$. 
-> **Powering the module's control VCC pin with 3.3V** natively resolves this issue, adjusting the H-bridge reading threshold to the STM32's logic voltage.
+> The IBT-2 module features a CMOS input buffer chip (`74HC244`). If you power the module's **7 (VCC)** pin with 5V, the minimum threshold to recognize a HIGH signal is $3.5\text{V}$, causing failure or unstable behavior since the ESP32-S3 outputs are $3.3\text{V}$. 
+> **Powering the module's control VCC pin with 3.3V** natively resolves this issue, adjusting the H-bridge reading threshold to the ESP32-S3's logic voltage.
 
 | IBT-2 Pin (Power) | Function | Connection |
 | :--- | :--- | :--- |
@@ -41,106 +42,52 @@ Below is the recommended electrical wiring diagram between the **BTS7960 (IBT-2)
 
 ---
 
-## ⚙️ Integration into Other Zephyr Projects
+## ⚙️ Configuration (menuconfig)
 
-To port this driver to another Zephyr RTOS project, follow the steps below:
-
-### Step 1: Copy the Driver Directory
-Copy the `engine-driver/` directory into your project's source folder (for example, inside `src/engine-driver/`).
-
-### Step 2: Configure `CMakeLists.txt`
-In the root `CMakeLists.txt` of your new project, add the subdirectory and link the static library to your executable (`app`):
-```cmake
-add_subdirectory(src/engine-driver)
-target_link_libraries(app PRIVATE engine_driver)
+You can configure pins, PWM frequency, and thread-safety graphically by running:
+```bash
+idf.py menuconfig
 ```
-
-### Step 3: Copy Devicetree Definitions
-1. Copy the binding template file `generic-engine.example.yml` (located inside this folder) to your new project's bindings directory, renaming it to `generic-engine.yaml` (usually under `dts/bindings/generic-engine.yaml` or `boards/bindings/generic-engine.yaml`).
-2. Add the following configurations to your board's overlay file (e.g., `app.overlay`):
-   ```dts
-   / {
-       engine: engine {
-           compatible = "generic-engine";
-           pwms = <&pwm2 1 50000 PWM_POLARITY_NORMAL>, /* TIM2 CH1 on PA0 (50us = 20kHz) */
-                  <&pwm2 2 50000 PWM_POLARITY_NORMAL>; /* TIM2 CH2 on PA1 (50us = 20kHz) */
-           enable-gpios = <&gpioa 4 GPIO_ACTIVE_HIGH>; /* R_EN and L_EN on PA4 */
-           status = "okay";
-       };
-   };
-
-   &timers2 {
-       status = "okay";
-       pwm2: pwm {
-           status = "okay";
-           pinctrl-0 = <&tim2_ch1_pa0 &tim2_ch2_pa1>; /* Enables hardware PWM pinout on PA0 and PA1 */
-           pinctrl-names = "default";
-       };
-   };
-   ```
-
-### Step 4: Configure `prj.conf` and `Kconfig`
-In the `prj.conf` of your new project, enable the required flags:
-```kconfig
-# Enables the Zephyr PWM subsystem
-CONFIG_PWM=y
-
-# Enables Thread-Safe motor driving if necessary (optional)
-CONFIG_ENGINE_THREAD_SAFE=y
-```
-If using the synchronization flag above (`CONFIG_ENGINE_THREAD_SAFE`), remember to declare the corresponding configuration menu in your project's root `Kconfig` file.
+Under **Component config** -> **Engine Driver Configuration**:
+* **`CONFIG_ENGINE_THREAD_SAFE`:** Enable thread-safety (Default: `y`). If disabled, all mutex instructions are compiled out for maximum performance.
+* **`CONFIG_ENGINE_PWM_FREQ_HZ`:** Frequency of the PWM signal in Hz (Default: `20000` / 20 kHz).
+* **`CONFIG_ENGINE_PIN_RPWM`:** GPIO number used for Forward PWM control (Default: `1`).
+* **`CONFIG_ENGINE_PIN_LPWM`:** GPIO number used for Reverse PWM control (Default: `2`).
+* **`CONFIG_ENGINE_PIN_ENABLE`:** GPIO number used for Enable control. Set to `-1` to disable hardware Enable pin control (Default: `3`).
 
 ---
 
 ## 💻 Usage Example
 
-Here is a simple C code example demonstrating how to declare, initialize, and control motor speed:
-
 ```c
-#include <zephyr/kernel.h>
-#include <stdio.h>
+#include "esp_log.h"
 #include "engine_driver.h"
 
-// Defines the driver structure based on the nodes created in the Devicetree
-static struct engine_config engine = {
-    .pwm_fwd = PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(engine), 0),
-    .pwm_rev = PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(engine), 1),
-    .enable  = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(engine), enable_gpios, {0}),
+static const char *TAG = "APP";
+
+// Static configuration using Kconfig defaults
+static struct engine_config motor = {
+    .pin_fwd = CONFIG_ENGINE_PIN_RPWM,
+    .pin_rev = CONFIG_ENGINE_PIN_LPWM,
+    .pin_enable = CONFIG_ENGINE_PIN_ENABLE,
+    .pwm_freq_hz = CONFIG_ENGINE_PWM_FREQ_HZ,
 };
 
-int main(void) {
-    printf("Initializing motor driver...\n");
-    
-    int ret = engine_driver_init(&engine);
-    if (ret < 0) {
-        printf("Driver initialization error (%d)\n", ret);
-        return ret;
+void app_main(void) {
+    ESP_LOGI(TAG, "Initializing H-Bridge motor driver...");
+    if (engine_driver_init(&motor) == 0) {
+        ESP_LOGI(TAG, "Motor driver initialized successfully.");
+        
+        // Rotate clockwise at 50% speed
+        engine_driver_set_speed(&motor, 50.0f);
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize motor driver!");
     }
-    
-    printf("Initialized successfully!\n");
-
-    while (1) {
-        // Rotate clockwise at 30% speed
-        engine_driver_set_speed(&engine, 30.0f);
-        k_msleep(3000);
-
-        // Apply active electronic brake (Slow Decay)
-        engine_driver_set_speed(&engine, 0.0f);
-        k_msleep(1500);
-
-        // Rotate counter-clockwise at 50% speed
-        engine_driver_set_speed(&engine, -50.0f);
-        k_msleep(3000);
-
-        // Stop and wait
-        engine_driver_set_speed(&engine, 0.0f);
-        k_msleep(2000);
-    }
-
-    return 0;
 }
 ```
+
 ---
+
 ![SmartSensing.me Logo](https://smartsensing.me/ssme-logo.png)
 
 ## 📝 Description
@@ -158,10 +105,9 @@ Unlike shallow content aimed only at clicks, this repository delivers:
 
 ## 🛠️ Technologies and Compatibility
 - **Language:** Pure C (C99 or higher) and C++
-- **Target Hardware:** Any microcontroller (ESP32, STM32, ARM Cortex, RISC-V, AVR, etc.) or desktop architecture
-- **Environments/RTOS:** ESP-IDF (as a native Component), Zephyr RTOS, FreeRTOS, Bare-metal, Desktop (Windows, Linux, macOS)
+- **Target Hardware:** ESP32-S3 (and other ESP32 family chips with MCPWM)
+- **Environments/RTOS:** ESP-IDF (as a native Component)
 - **Build System:** Native CMake
-- **Simulation:** LTSpice (Sensor modeling and validation)
 
 ---
 

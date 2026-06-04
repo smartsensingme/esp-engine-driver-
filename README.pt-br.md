@@ -1,146 +1,93 @@
-# BTS7960 (IBT-2) Dual PWM Engine Driver for Zephyr RTOS
+# Driver de Motor Duplo PWM BTS7960 (IBT-2) para ESP-IDF
 
-*Leia em outros idiomas: [English](README.md)*
+*Read in other languages: [English](README.md)*
 
-Este módulo fornece um driver estático em C modular e otimizado para o controle de motores DC usando a ponte H de alta corrente **BTS7960** (comumente vendida sob a placa de interface **IBT-2**). 
+Este módulo fornece um driver C estático modular e otimizado para controle de motores DC usando a ponte H de alta corrente **BTS7960** (comumente vendida como placa de interface **IBT-2**) no **ESP32-S3** sob o **ESP-IDF**.
 
-O controle é feito em modo **Dual PWM (Slow-Decay / Freio Dinâmico Ativo)**, utilizando as macros Low-Layer (LL) da STMicroelectronics para máxima velocidade de processamento e chaveamento, além de possuir suporte nativo para segurança de concorrência (*thread-safety*).
+O controle é feito em modo **Dual PWM (Slow-Decay / Frenagem Dinâmica Ativa)**, utilizando o periférico nativo **MCPWM** do ESP32-S3 para máxima resolução e velocidade de comutação, com suporte nativo a thread-safety.
 
-### Recursos de Performance:
-* **Resolução Dinâmica Nativa:** A entrada de velocidade (de `-100.0f` a `100.0f`) é mapeada diretamente para a contagem de ciclos do timer de hardware, aproveitando a precisão física máxima (sem passos lógicos intermediários limitados a 10 ou 12 bits).
-* **Diagnóstico de Inicialização:** No boot, a função `engine_driver_init` imprime no console a frequência física em Hz e a resolução real em passos. Um aviso de atenção (`WARNING`) será exibido se a resolução for menor do que 1024 passos para garantir o controle ideal.
+### Principais Características de Desempenho:
+* **Alta Resolução:** O timer é configurado com uma resolução de clock de 80 MHz (frequência física máxima do timer no ESP32-S3), resultando em exatamente **4000 passos de resolução** para uma frequência de 20 kHz.
+* **Dead-time por Software:** Protege a ponte H contra curto-circuito (shoot-through) durante inversões de sentido com um atraso de transição preciso de 50 us (`esp_rom_delay_us(50)`).
+* **Thread-safety Selecionável:** A segurança de threads é configurável em tempo de compilação usando `CONFIG_ENGINE_THREAD_SAFE` via Kconfig/menuconfig.
 
 ---
 
-## 🔌 Pinagem Sugerida
+## 🔌 Pinagem Sugerida (ESP32-S3)
 
-Abaixo está o esquema de ligação elétrica recomendado entre o módulo **BTS7960 (IBT-2)** e a placa de desenvolvimento **WeAct STM32G431 Core Board**:
+Abaixo está o diagrama de fiação elétrica recomendado entre o módulo **BTS7960 (IBT-2)** e o **ESP32-S3 DevKit**:
 
-| Pino IBT-2 (Lado Controle) | Sinal | Pino STM32G431 | Descrição |
+| Pino IBT-2 (Controle) | Sinal | Pino ESP32-S3 | Descrição |
 | :--- | :--- | :--- | :--- |
-| **1 (RPWM)** | Entrada de sinal horário | **PA0** | Canal 1 do Timer `TIM2` (Chaveamento PWM) |
-| **2 (LPWM)** | Entrada de sinal anti-horário | **PA1** | Canal 2 do Timer `TIM2` (Chaveamento PWM) |
-| **3 (R_EN)** | Enable do sentido horário | **PA4** | GPIO de Habilitação (Ativa em HIGH) |
-| **4 (L_EN)** | Enable do sentido anti-horário | **PA4** | GPIO de Habilitação (Ativa em HIGH, conectada com R_EN) |
-| **5 (R_IS)** | Alarme de corrente horária | *Não conectado* | Saída analógica opcional para leitura de sobrecorrente |
-| **6 (L_IS)** | Alarme de corrente anti-horária | *Não conectado* | Saída analógica opcional para leitura de sobrecorrente |
+| **1 (RPWM)** | Entrada PWM Horário | **GPIO 1** | Gerador MCPWM 0A |
+| **2 (LPWM)** | Entrada PWM Anti-horário | **GPIO 2** | Gerador MCPWM 0B |
+| **3 (R_EN)** | Enable Horário | **GPIO 3** | GPIO de Enable (Ativo em HIGH, interligado ao L_EN) |
+| **4 (L_EN)** | Enable Anti-horário | **GPIO 3** | GPIO de Enable (Ativo em HIGH, interligado ao R_EN) |
+| **5 (R_IS)** | Alarme corrente horário | *Não conectado* | Saída analógica opcional para leitura de sobrecorrente |
+| **6 (L_IS)** | Alarme corrente anti-horário | *Not conectado* | Saída analógica opcional para leitura de sobrecorrente |
 | **7 (VCC)** | Tensão lógica do buffer | **3.3V** | Alimenta a lógica do buffer de entrada do módulo (74HC244) |
-| **8 (GND)** | Terra lógico comum | **GND** | Conexão de referência comum de terra (Obrigatório) |
+| **8 (GND)** | Terra lógico comum | **GND** | Conexão comum de referência de terra (Obrigatório) |
 
 > [!WARNING]
 > **Compatibilidade Lógica (3.3V vs 5V):**
-> O módulo IBT-2 possui um chip buffer de entrada CMOS (`74HC244`). Se você alimentar o pino **7 (VCC)** do módulo com 5V, o limiar mínimo para ele reconhecer o sinal alto será de $3.5\text{V}$, causando falha ou comportamento instável, já que as saídas do STM32 são de $3.3\text{V}$. 
-> **Alimentar o pino VCC do controle do módulo com 3.3V** resolve esse problema nativamente, ajustando o limiar de leitura da ponte H para a tensão lógica do STM32.
+> O módulo IBT-2 possui um chip de buffer de entrada CMOS (`74HC244`). Se você alimentar o pino **7 (VCC)** do módulo com 5V, o limite mínimo para reconhecer um sinal em nível HIGH é de $3.5\text{V}$, causando falha ou comportamento instável, já que as saídas do ESP32-S3 são de $3.3\text{V}$. 
+> **Alimentar o pino VCC lógica com 3.3V** resolve esse problema nativamente, ajustando o limite de leitura da ponte H para a tensão lógica do ESP32-S3.
 
 | Pino IBT-2 (Potência) | Função | Conexão |
 | :--- | :--- | :--- |
-| **B+** | Alimentação positiva de potência | Terminal positivo da fonte/bateria do motor (6V a 27V DC) |
+| **B+** | Alimentação positiva | Terminal positivo da fonte/bateria do motor (6V a 27V DC) |
 | **B-** | Terra de potência | Terminal negativo da fonte/bateria do motor |
-| **M+ / R_OUT** | Saída positiva para motor | Terminal 1 do motor DC |
-| **M- / L_OUT** | Saída negativa para motor | Terminal 2 do motor DC |
+| **M+ / R_OUT** | Saída positiva motor | Terminal 1 do motor DC |
+| **M- / L_OUT** | Saída negativa motor | Terminal 2 do motor DC |
 
 ---
 
-## ⚙️ Integração em Outros Projetos Zephyr
+## ⚙️ Configuração (menuconfig)
 
-Para levar este driver para outro projeto Zephyr RTOS, siga os passos abaixo:
-
-### Passo 1: Copiar a Pasta do Driver
-Copie a pasta `engine-driver/` para o diretório de fontes do seu projeto (por exemplo, dentro de `src/engine-driver/`).
-
-### Passo 2: Configurar o `CMakeLists.txt`
-No arquivo `CMakeLists.txt` raiz do seu projeto novo, adicione a subpasta e vincule a biblioteca estática ao seu executável (`app`):
-```cmake
-add_subdirectory(src/engine-driver)
-target_link_libraries(app PRIVATE engine_driver)
+Você pode configurar graficamente os pinos, a frequência do PWM e o thread-safety executando:
+```bash
+idf.py menuconfig
 ```
-
-### Passo 3: Copiar as Definições do Devicetree
-1. Copie o arquivo de template de binding `generic-engine.example.yml` (localizado dentro desta pasta) para o diretório de bindings do seu novo projeto, renomeando-o para `generic-engine.yaml` (geralmente sob `dts/bindings/generic-engine.yaml` ou `boards/bindings/generic-engine.yaml`).
-2. Adicione as seguintes configurações ao seu arquivo de overlay da placa (ex: `app.overlay`):
-   ```dts
-   / {
-       engine: engine {
-           compatible = "generic-engine";
-           pwms = <&pwm2 1 50000 PWM_POLARITY_NORMAL>, /* TIM2 CH1 no PA0 (50us = 20kHz) */
-                  <&pwm2 2 50000 PWM_POLARITY_NORMAL>; /* TIM2 CH2 no PA1 (50us = 20kHz) */
-           enable-gpios = <&gpioa 4 GPIO_ACTIVE_HIGH>; /* R_EN e L_EN no PA4 */
-           status = "okay";
-       };
-   };
-
-   &timers2 {
-       status = "okay";
-       pwm2: pwm {
-           status = "okay";
-           pinctrl-0 = <&tim2_ch1_pa0 &tim2_ch2_pa1>; /* Ativa pinagem PWM de hardware no PA0 e PA1 */
-           pinctrl-names = "default";
-       };
-   };
-   ```
-
-### Passo 4: Configurar o `prj.conf` e `Kconfig`
-No arquivo `prj.conf` do seu projeto novo, ative as flags requeridas:
-```kconfig
-# Habilita o subsistema de PWM do Zephyr
-CONFIG_PWM=y
-
-# Habilita Thread-Safe no acionamento do motor se necessário (opcional)
-CONFIG_ENGINE_THREAD_SAFE=y
-```
-Se utilizar a flag de sincronização acima (`CONFIG_ENGINE_THREAD_SAFE`), lembre-se de declarar o menu de configuração correspondente em seu arquivo `Kconfig` no nível raiz do projeto.
+Acesse **Component config** -> **Engine Driver Configuration**:
+* **`CONFIG_ENGINE_THREAD_SAFE`:** Ativar proteção por Mutex (Padrão: `y`). Se desativado, todas as operações de mutex são removidas da compilação para máxima velocidade de processamento.
+* **`CONFIG_ENGINE_PWM_FREQ_HZ`:** Frequência do sinal PWM em Hz (Padrão: `20000` / 20 kHz).
+* **`CONFIG_ENGINE_PIN_RPWM`:** Número do GPIO usado para o controle Forward (Padrão: `1`).
+* **`CONFIG_ENGINE_PIN_LPWM`:** Número do GPIO usado para o controle Reverse (Padrão: `2`).
+* **`CONFIG_ENGINE_PIN_ENABLE`:** Número do GPIO usado para o controle Enable. Defina como `-1` para desabilitar o controle físico do pino Enable (Padrão: `3`).
 
 ---
 
 ## 💻 Exemplo de Uso
 
-Aqui está um exemplo simples de código em C demonstrando como declarar, inicializar e controlar a velocidade do motor:
-
 ```c
-#include <zephyr/kernel.h>
-#include <stdio.h>
+#include "esp_log.h"
 #include "engine_driver.h"
 
-// Define a estrutura do driver com base nos nós criados no Devicetree
-static struct engine_config engine = {
-    .pwm_fwd = PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(engine), 0),
-    .pwm_rev = PWM_DT_SPEC_GET_BY_IDX(DT_NODELABEL(engine), 1),
-    .enable  = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(engine), enable_gpios, {0}),
+static const char *TAG = "APP";
+
+// Configuração estática usando os padrões do Kconfig
+static struct engine_config motor = {
+    .pin_fwd = CONFIG_ENGINE_PIN_RPWM,
+    .pin_rev = CONFIG_ENGINE_PIN_LPWM,
+    .pin_enable = CONFIG_ENGINE_PIN_ENABLE,
+    .pwm_freq_hz = CONFIG_ENGINE_PWM_FREQ_HZ,
 };
 
-int main(void) {
-    printf("Inicializando driver do motor...\n");
-    
-    int ret = engine_driver_init(&engine);
-    if (ret < 0) {
-        printf("Erro na inicialização do driver (%d)\n", ret);
-        return ret;
+void app_main(void) {
+    ESP_LOGI(TAG, "Inicializando driver do motor...");
+    if (engine_driver_init(&motor) == 0) {
+        ESP_LOGI(TAG, "Driver do motor inicializado com sucesso.");
+        
+        // Gira no sentido horário com 50% de velocidade
+        engine_driver_set_speed(&motor, 50.0f);
+    } else {
+        ESP_LOGE(TAG, "Falha ao inicializar o driver do motor!");
     }
-    
-    printf("Inicializado com sucesso!\n");
-
-    while (1) {
-        // Gira no sentido horário a 30% de velocidade
-        engine_driver_set_speed(&engine, 30.0f);
-        k_msleep(3000);
-
-        // Aplica freio eletrônico ativo (Slow Decay)
-        engine_driver_set_speed(&engine, 0.0f);
-        k_msleep(1500);
-
-        // Gira no sentido anti-horário a 50% de velocidade
-        engine_driver_set_speed(&engine, -50.0f);
-        k_msleep(3000);
-
-        // Para e aguarda
-        engine_driver_set_speed(&engine, 0.0f);
-        k_msleep(2000);
-    }
-
-    return 0;
 }
 ```
+
 ---
+
 ![SmartSensing.me Logo](https://smartsensing.me/ssme-logo.png)
 
 ## 📝 Descrição
@@ -148,9 +95,9 @@ int main(void) {
 Este projeto faz parte do ecossistema **SmartSensing.me** e vai além dos exemplos básicos encontrados na internet. Aqui, aplicamos os fundamentos reais da engenharia de instrumentação e sistemas embarcados de alta performance.
 
 Diferente de conteúdos superficiais voltados apenas para cliques, este repositório entrega:
-- **Ineditismo:** Implementações originais baseadas em quase 30 anos de experiência acadêmica.
-- **Densidade Técnica:** Uso profissional do framework ESP-IDF e FreeRTOS.
-- **Didática:** Código documentado e estruturado para quem busca evolução técnica real.
+- **Originalidade:** Implementações originais baseadas em quase 30 anos de experiência acadêmica.
+- **Densidade Técnica:** Uso profissional das frameworks ESP-IDF, Zephyr RTOS e FreeRTOS.
+- **Didática:** Códigos documentados e estruturados para quem busca real crescimento técnico.
 
 > "Transformamos sinais do mundo físico em inteligência digital, sem atalhos."
 
@@ -158,18 +105,17 @@ Diferente de conteúdos superficiais voltados apenas para cliques, este reposit�
 
 ## 🛠️ Tecnologias e Compatibilidade
 - **Linguagem:** C puro (C99 ou superior) e C++
-- **Hardware Alvo:** Qualquer microcontrolador (ESP32, STM32, ARM Cortex, RISC-V, AVR, etc.) ou arquitetura desktop
-- **Ambientes/RTOS:** ESP-IDF (como Componente nativo), Zephyr RTOS, FreeRTOS, Bare-metal, Desktop (Windows, Linux, macOS)
-- **Build System:** CMake nativo
-- **Simulação:** LTSpice (Modelagem e validação de sensores)
+- **Hardware Alvo:** ESP32-S3 (e outras SoCs da família ESP32 com suporte a MCPWM)
+- **Ambientes/RTOS:** ESP-IDF (como Componente nativo)
+- **Build System:** CMake Nativo
 
 ---
 
 ## 👤 Sobre o Autor
 
-**José Alexandre de França** *Professor Adjunto no Departamento de Engenharia Elétrica da UEL*
+**José Alexandre de França** *Professor Associado no Departamento de Engenharia Elétrica da UEL*
 
-Engenheiro Eletricista com quase três décadas de experiência no ensino de graduação e pós-graduação. Doutor em Engenharia Elétrica, pesquisador em instrumentação eletrônica e desenvolvedor de sistemas embarcados. O SmartSensing.me é o meu compromisso de elevar o nível da educação tecnológica no Brasil.
+Engenheiro Eletricista com quase três décadas de experiência na docência de graduação e pós-graduação. Doutor em Engenharia Elétrica, pesquisador em instrumentação eletrônica e desenvolvedor de sistemas embarcados. O SmartSensing.me é o meu compromisso com a elevação do nível da educação tecnológica no Brasil.
 
 - 🌐 **Website:** [smartsensing.me](https://smartsensing.me)
 - 📧 **E-mail:** [info@smartsensing.me](mailto:info@smartsensing.me)
@@ -180,4 +126,4 @@ Engenheiro Eletricista com quase três décadas de experiência no ensino de gra
 
 ## 📄 Licença
 
-Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para detalhes.
+Este projeto é licenciado sob a Licença MIT. Veja o arquivo [LICENSE](LICENSE) para detalhes.
