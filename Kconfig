@@ -1,0 +1,38 @@
+menu "Engine Driver Configuration"
+
+    config ENGINE_THREAD_SAFE
+        bool "Thread-safe engine driver"
+        default y
+        help
+            Enable thread-safety. When checked, the driver uses a Mutex semaphore to synchronize
+            calls. If disabled, all mutex instructions are compiled out for maximum performance.
+
+    config ENGINE_PWM_FREQ_HZ
+        int "PWM Frequency (Hz)"
+        default 20000
+        range 1000 1000000
+        help
+            Frequency of the PWM signal in Hz. Default is 20000 (20 kHz).
+
+    config ENGINE_PIN_RPWM
+        int "GPIO for RPWM (Forward)"
+        default 1
+        range 0 48
+        help
+            GPIO number used for Forward PWM control (RPWM).
+
+    config ENGINE_PIN_LPWM
+        int "GPIO for LPWM (Reverse)"
+        default 2
+        range 0 48
+        help
+            GPIO number used for Reverse PWM control (LPWM).
+
+    config ENGINE_PIN_ENABLE
+        int "GPIO for Enable (R_EN/L_EN)"
+        default 3
+        range -1 48
+        help
+            GPIO number used for H-Bridge Enable pin. Set to -1 to disable hardware Enable pin control.
+
+endmenu
