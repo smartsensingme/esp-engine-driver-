@@ -72,6 +72,12 @@ a estimativa principal da corrente equivalente; a mediana é complementar e
 ajuda a identificar impulsos ou outliers. Em duty baixo, a mediana pode ser
 zero mesmo quando a corrente média não é zero.
 
+A tarefa do ADC também calibra a média normal do último frame e publica sua
+corrente equivalente ponderada pelo PWM em miliampères inteiros. Consumidores
+de tempo real usam `engine_current_sense_get_latest_current_milliamps()` numa
+leitura sem trava; a calibração ADC nunca é chamada pelo caminho de controle.
+O valor fica inválido enquanto um frame não contiver amostras normais.
+
 O pino `I_IS` também sinaliza falhas do BTS7960 por uma corrente praticamente
 independente da corrente da carga. Amostras acima do limiar configurado são
 contadas como falha e não são convertidas em ampères. Os snapshots informam a

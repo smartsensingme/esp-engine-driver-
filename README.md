@@ -72,6 +72,12 @@ mean is the primary equivalent-current estimate; the median is complementary
 and helps reveal impulses or outliers. At low duty, the median can be zero even
 when the mean current is nonzero.
 
+The ADC task also calibrates the latest normal-frame mean and publishes its
+PWM-weighted equivalent current as integer milliamperes. Real-time consumers
+use `engine_current_sense_get_latest_current_milliamps()` as a lock-free read;
+they never invoke ADC calibration from the control path. The value is marked
+invalid while a frame contains no normal samples.
+
 `I_IS` also reports BTS7960 faults with a current that is effectively
 independent of load current. Samples above the configured threshold are counted
 as faults and are not converted to amperes. Snapshots report the fraction of

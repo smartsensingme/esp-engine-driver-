@@ -56,6 +56,8 @@ static portMUX_TYPE data_lock = portMUX_INITIALIZER_UNLOCKED;
 static current_sense_accumulator_t accumulator;
 static engine_current_sense_frame_t latest_frame;
 static atomic_uint pool_overflows;
+static atomic_int_least32_t latest_current_milliamps;
+static atomic_bool latest_current_valid;
 static uint32_t fault_enter_raw;
 static uint32_t fault_exit_raw;
 static bool fault_active;
@@ -145,8 +147,9 @@ static esp_err_t calibrated_raw_threshold(int target_mv,
   return ESP_OK;
 }
 
-static void accumulate_frame(const adc_continuous_data_t *samples,
-                             uint32_t sample_count) {
+static bool accumulate_frame(const adc_continuous_data_t *samples,
+                             uint32_t sample_count,
+                             uint32_t *normal_raw_average) {
   uint32_t raw_values[CURRENT_SENSE_SAMPLES_PER_FRAME];
   uint64_t raw_sum = 0;
   uint64_t normal_raw_sum = 0;
@@ -225,6 +228,11 @@ static void accumulate_frame(const adc_continuous_data_t *samples,
       .invalid_results = invalid_results,
   };
   portEXIT_CRITICAL(&data_lock);
+  if (normal_count > 0U && normal_raw_average != NULL) {
+    *normal_raw_average = (uint32_t)(normal_raw_sum / normal_count);
+    return true;
+  }
+  return false;
 }
 
 static void current_sense_task(void *argument) {
@@ -257,12 +265,34 @@ static void current_sense_task(void *argument) {
         portEXIT_CRITICAL(&data_lock);
         continue;
       }
-      accumulate_frame(parsed, parsed_count);
+      uint32_t normal_raw_average = 0U;
+      if (accumulate_frame(parsed, parsed_count, &normal_raw_average)) {
+        int adc_millivolts = 0;
+        if (adc_cali_raw_to_voltage(calibration_handle, (int)normal_raw_average,
+                                    &adc_millivolts) == ESP_OK) {
+          float current_milliamps =
+              engine_current_sense_adc_to_amperes(adc_millivolts) * 1000.0f;
+          int32_t rounded_milliamps = current_milliamps >= 0.0f
+                                          ? (int32_t)(current_milliamps + 0.5f)
+                                          : (int32_t)(current_milliamps - 0.5f);
+          atomic_store_explicit(&latest_current_milliamps, rounded_milliamps,
+                                memory_order_relaxed);
+          atomic_store_explicit(&latest_current_valid, true,
+                                memory_order_release);
+        } else {
+          atomic_store_explicit(&latest_current_valid, false,
+                                memory_order_release);
+        }
+      } else {
+        atomic_store_explicit(&latest_current_valid, false,
+                              memory_order_release);
+      }
     }
   }
 }
 
 static void cleanup_resources(void) {
+  atomic_store_explicit(&latest_current_valid, false, memory_order_release);
   if (adc_handle != NULL) {
     adc_continuous_stop(adc_handle);
   }
@@ -350,6 +380,8 @@ esp_err_t engine_current_sense_start(void) {
 
   reset_accumulator();
   latest_frame = (engine_current_sense_frame_t){0};
+  atomic_store_explicit(&latest_current_milliamps, 0, memory_order_relaxed);
+  atomic_store_explicit(&latest_current_valid, false, memory_order_relaxed);
   fault_active = false;
   atomic_store_explicit(&pool_overflows, 0U, memory_order_relaxed);
   BaseType_t task_created = xTaskCreatePinnedToCore(
@@ -431,6 +463,16 @@ bool engine_current_sense_get_latest_frame(
   *frame = latest_frame;
   portEXIT_CRITICAL(&data_lock);
   return frame->sequence != 0U && frame->samples > 0U;
+}
+
+bool engine_current_sense_get_latest_current_milliamps(int32_t *milliamps) {
+  if (milliamps == NULL ||
+      !atomic_load_explicit(&latest_current_valid, memory_order_acquire)) {
+    return false;
+  }
+  *milliamps =
+      atomic_load_explicit(&latest_current_milliamps, memory_order_relaxed);
+  return true;
 }
 
 esp_err_t engine_current_sense_raw_to_millivolts(uint32_t raw,

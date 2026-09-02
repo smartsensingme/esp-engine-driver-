@@ -55,6 +55,14 @@ bool engine_current_sense_take_snapshot(
 /** Copy the latest complete frame without consuming it. */
 bool engine_current_sense_get_latest_frame(engine_current_sense_frame_t *frame);
 
+/**
+ * Copy the latest calibrated, PWM-weighted equivalent current.
+ *
+ * The ADC task updates this value once per completed 1 ms frame. Reading it is
+ * lock-free and does not run ADC calibration in the caller.
+ */
+bool engine_current_sense_get_latest_current_milliamps(int32_t *milliamps);
+
 /** Convert a raw ADC result to calibrated millivolts at the ADC pin. */
 esp_err_t engine_current_sense_raw_to_millivolts(uint32_t raw, int *millivolts);
 
