@@ -23,7 +23,7 @@ Below is the recommended wiring diagram between the **BTS7960 (IBT-2)** module a
 | **2 (LPWM)** | Counter-clockwise PWM input | **GPIO 2** | MCPWM Generator 0B |
 | **3 (R_EN)** | Clockwise Direction Enable | **GPIO 3** | Enable GPIO (Active HIGH, connected to L_EN) |
 | **4 (L_EN)** | Counter-clockwise Direction Enable | **GPIO 3** | Enable GPIO (Active HIGH, connected to R_EN) |
-| **5 (R_IS)** | Clockwise current alarm | *Not connected* | Optional analog output for overcurrent reading |
+| **5 (R_IS)** | Clockwise current sense | **Conditioned GPIO 4** | Optional analog diagnostic/current output |
 | **6 (L_IS)** | Counter-clockwise current alarm | *Not connected* | Optional analog output for overcurrent reading |
 | **7 (VCC)** | Buffer logic voltage | **3.3V** | Powers the module's input buffer logic (74HC244) |
 | **8 (GND)** | Common logic ground | **GND** | Common ground reference connection (Mandatory) |
@@ -53,7 +53,42 @@ Under **Component config** -> **Engine Driver Configuration**:
 * **`CONFIG_ENGINE_PWM_FREQ_HZ`:** Frequency of the PWM signal in Hz (Default: `20000` / 20 kHz).
 * **`CONFIG_ENGINE_PIN_RPWM`:** GPIO number used for Forward PWM control (Default: `1`).
 * **`CONFIG_ENGINE_PIN_LPWM`:** GPIO number used for Reverse PWM control (Default: `2`).
-* **`CONFIG_ENGINE_PIN_ENABLE`:** GPIO number used for Enable control. Set to `-1` to disable hardware Enable pin control (Default: `3`).
+* **`CONFIG_ENGINE_PIN_ENABLE`:** GPIO tied to both R_EN/L_EN (Default: `3`). It is required to implement the `COAST` state.
+* **`CONFIG_ENGINE_CURRENT_SENSE_ENABLE`:** Enables continuous ADC1/DMA acquisition of `R_IS`.
+* **`CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS`:** Conditioned ADC1 input (Default: `4`).
+* **`CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ`:** Aggregate rate (Default: `25000`), producing 25 samples per 1 ms frame.
+* **`CONFIG_ENGINE_CURRENT_SENSE_FAULT_ENTER_MV`:** Calibrated `I_IS` fault-entry threshold (Default: `1500` mV).
+* **`CONFIG_ENGINE_CURRENT_SENSE_FAULT_EXIT_MV`:** Hysteretic fault-exit threshold (Default: `1000` mV).
+
+### Optional Current Measurement
+
+The board used by this project has 10 kΩ from `R_IS` to ground. Do not connect
+the GPIO directly. Add 10 kΩ in series to the ADC, 1 kΩ from ADC to ground,
+100 nF from ADC to ground, and external Schottky clamps to 3.3 V/GND.
+
+Continuous ADC processing runs on Core 0 and performs no blocking conversion in
+the control task. Each 1 ms frame exposes the mean and median of 25 samples. The
+mean is the primary equivalent-current estimate; the median is complementary
+and helps reveal impulses or outliers. At low duty, the median can be zero even
+when the mean current is nonzero.
+
+`I_IS` also reports BTS7960 faults with a current that is effectively
+independent of load current. Samples above the configured threshold are counted
+as faults and are not converted to amperes. Snapshots report the fraction of
+fault samples, the number of entries into the fault state, and whether it is
+still active at the end of the window.
+
+With the 10 kΩ/10 kΩ/1 kΩ network and `k_ILIS=8500`, nominal sensitivity at the
+ADC is about 56 mV/A. The wide `k_ILIS` tolerance requires calibration against a
+trusted ammeter.
+
+### Bridge states
+
+`engine_driver_set_speed()` applies PWM for nonzero commands. An exact zero
+command selects `COAST`: RPWM/LPWM are forced low and R_EN/L_EN are disabled.
+`engine_driver_brake()` provides explicit active braking by keeping the enables
+active with both PWM pins low. Static levels use the MCPWM force action rather
+than relying on the ambiguous compare-equals-zero edge case.
 
 ---
 

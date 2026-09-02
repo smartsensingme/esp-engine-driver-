@@ -23,7 +23,7 @@ Abaixo está o diagrama de fiação elétrica recomendado entre o módulo **BTS7
 | **2 (LPWM)** | Entrada PWM Anti-horário | **GPIO 2** | Gerador MCPWM 0B |
 | **3 (R_EN)** | Enable Horário | **GPIO 3** | GPIO de Enable (Ativo em HIGH, interligado ao L_EN) |
 | **4 (L_EN)** | Enable Anti-horário | **GPIO 3** | GPIO de Enable (Ativo em HIGH, interligado ao R_EN) |
-| **5 (R_IS)** | Alarme corrente horário | *Não conectado* | Saída analógica opcional para leitura de sobrecorrente |
+| **5 (R_IS)** | Corrente sentido horário | **GPIO 4 condicionado** | Saída analógica opcional de diagnóstico/corrente |
 | **6 (L_IS)** | Alarme corrente anti-horário | *Not conectado* | Saída analógica opcional para leitura de sobrecorrente |
 | **7 (VCC)** | Tensão lógica do buffer | **3.3V** | Alimenta a lógica do buffer de entrada do módulo (74HC244) |
 | **8 (GND)** | Terra lógico comum | **GND** | Conexão comum de referência de terra (Obrigatório) |
@@ -53,7 +53,42 @@ Acesse **Component config** -> **Engine Driver Configuration**:
 * **`CONFIG_ENGINE_PWM_FREQ_HZ`:** Frequência do sinal PWM em Hz (Padrão: `20000` / 20 kHz).
 * **`CONFIG_ENGINE_PIN_RPWM`:** Número do GPIO usado para o controle Forward (Padrão: `1`).
 * **`CONFIG_ENGINE_PIN_LPWM`:** Número do GPIO usado para o controle Reverse (Padrão: `2`).
-* **`CONFIG_ENGINE_PIN_ENABLE`:** Número do GPIO usado para o controle Enable. Defina como `-1` para desabilitar o controle físico do pino Enable (Padrão: `3`).
+* **`CONFIG_ENGINE_PIN_ENABLE`:** GPIO ligado conjuntamente a R_EN/L_EN (Padrão: `3`). Ele é obrigatório para implementar o estado `COAST`.
+* **`CONFIG_ENGINE_CURRENT_SENSE_ENABLE`:** Habilita a aquisição contínua de `R_IS` por ADC1/DMA.
+* **`CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS`:** Entrada ADC1 condicionada (Padrão: `4`).
+* **`CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ`:** Taxa agregada (Padrão: `25000`), formando 25 amostras por frame de 1 ms.
+* **`CONFIG_ENGINE_CURRENT_SENSE_FAULT_ENTER_MV`:** Limiar calibrado de entrada no estado de falha de `I_IS` (Padrão: `1500` mV).
+* **`CONFIG_ENGINE_CURRENT_SENSE_FAULT_EXIT_MV`:** Limiar de saída com histerese (Padrão: `1000` mV).
+
+### Medição opcional de corrente
+
+A placa usada neste projeto possui 10 kΩ entre `R_IS` e GND. O GPIO não deve
+ser ligado diretamente ao pino. Adicione 10 kΩ em série até o ADC, 1 kΩ do ADC
+para GND, 100 nF do ADC para GND e clamps Schottky externos para 3,3 V/GND.
+
+O ADC contínuo roda no Core 0 e não realiza conversões bloqueantes na tarefa de
+controle. Cada frame de 1 ms fornece média e mediana das 25 amostras. A média é
+a estimativa principal da corrente equivalente; a mediana é complementar e
+ajuda a identificar impulsos ou outliers. Em duty baixo, a mediana pode ser
+zero mesmo quando a corrente média não é zero.
+
+O pino `I_IS` também sinaliza falhas do BTS7960 por uma corrente praticamente
+independente da corrente da carga. Amostras acima do limiar configurado são
+contadas como falha e não são convertidas em ampères. Os snapshots informam a
+fração de amostras em falha, o número de entradas nesse estado e se ele continua
+ativo ao final da janela.
+
+Com os resistores 10 kΩ/10 kΩ/1 kΩ e `k_ILIS=8500`, a sensibilidade nominal no
+ADC é aproximadamente 56 mV/A. A tolerância de `k_ILIS` exige calibração contra
+um amperímetro confiável.
+
+### Estados da ponte
+
+`engine_driver_set_speed()` aplica PWM para comandos diferentes de zero. Um
+comando exatamente zero seleciona `COAST`: força RPWM/LPWM em nível baixo e
+desabilita R_EN/L_EN. `engine_driver_brake()` oferece frenagem ativa explícita,
+mantendo os enables ativos com os dois PWM baixos. Os níveis estáticos usam a
+força de saída do MCPWM, sem depender do caso ambíguo de compare igual a zero.
 
 ---
 

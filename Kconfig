@@ -31,8 +31,83 @@ menu "Engine Driver Configuration"
     config ENGINE_PIN_ENABLE
         int "GPIO for Enable (R_EN/L_EN)"
         default 3
-        range -1 48
+        range 0 48
         help
-            GPIO number used for H-Bridge Enable pin. Set to -1 to disable hardware Enable pin control.
+            GPIO connected to both R_EN and L_EN. It is required so COAST can
+            immediately disable both BTS7960 half bridges.
+
+    config ENGINE_CURRENT_SENSE_ENABLE
+        bool "Enable continuous BTS7960 R_IS acquisition"
+        default y
+        help
+            Sample R_IS continuously with ADC1 and DMA. A low-priority Core 0
+            task calculates one frame per millisecond and accumulates the
+            longer diagnostic window. This is optional and does not execute an
+            ADC conversion in the motor-control task.
+
+    config ENGINE_CURRENT_SENSE_GPIO_R_IS
+        int "GPIO for conditioned R_IS"
+        range 1 10
+        default 4
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            ESP32-S3 ADC1 GPIO connected after the divider, RC filter, and
+            external input clamps.
+
+    config ENGINE_CURRENT_SENSE_SAMPLE_HZ
+        int "Continuous ADC sample frequency (Hz)"
+        range 10000 80000
+        default 25000
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            Must be an integer multiple of 1000 so each DMA frame represents
+            one millisecond. At 25 ksample/s each frame contains 25 samples.
+
+    config ENGINE_CURRENT_SENSE_BOARD_RESISTOR_OHMS
+        int "R_IS resistor fitted on the IBT-2 (ohms)"
+        range 1 100000
+        default 10000
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+
+    config ENGINE_CURRENT_SENSE_SERIES_RESISTOR_OHMS
+        int "Series resistor from R_IS to ADC node (ohms)"
+        range 1 100000
+        default 10000
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+
+    config ENGINE_CURRENT_SENSE_PULLDOWN_RESISTOR_OHMS
+        int "Pulldown resistor from ADC node to GND (ohms)"
+        range 1 100000
+        default 1000
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+
+    config ENGINE_CURRENT_SENSE_RATIO
+        int "Nominal BTS7960 load-to-sense current ratio"
+        range 1000 20000
+        default 8500
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            Nominal k_ILIS used for the approximate current. Calibrate the
+            assembled channel against a trusted ammeter.
+
+    config ENGINE_CURRENT_SENSE_FAULT_ENTER_MV
+        int "ADC voltage that enters I_IS fault state (mV)"
+        range 100 3000
+        default 1500
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            A calibrated ADC sample at or above this voltage is interpreted
+            as the BTS7960 fault-current output, not as load current. With the
+            documented resistor network, normal 5 A operation remains below
+            approximately 800 mV even at the lowest specified k_ILIS.
+
+    config ENGINE_CURRENT_SENSE_FAULT_EXIT_MV
+        int "ADC voltage that exits I_IS fault state (mV)"
+        range 0 2900
+        default 1000
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            Lower hysteresis threshold for returning to current-sense mode.
+            This value must be lower than the fault-entry threshold.
 
 endmenu
