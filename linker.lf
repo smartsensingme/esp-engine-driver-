@@ -1,0 +1,5 @@
+[mapping:engine_driver_mcpwm_force_cache_safe]
+archive: libesp_driver_mcpwm.a
+entries:
+    if ENGINE_CACHE_SAFE_CONTROL = y:
+        mcpwm_gen: mcpwm_generator_set_force_level (noflash)

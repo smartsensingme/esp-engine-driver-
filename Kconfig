@@ -1,32 +1,55 @@
 menu "Engine Driver Configuration"
 
     config ENGINE_THREAD_SAFE
-        bool "Thread-safe engine driver"
+        bool "Protect each engine-driver instance with a mutex"
         default y
         help
-            Enable thread-safety. When checked, the driver uses a Mutex semaphore to synchronize
-            calls. If disabled, all mutex instructions are compiled out for maximum performance.
+            Serialize bridge commands and state snapshots with one statically
+            allocated FreeRTOS mutex per engine_config instance. Disable only
+            when one task owns the instance and no concurrent task/ISR accesses
+            it. Disabling compiles out the mutex operations.
+
+    config ENGINE_CACHE_SAFE_CONTROL
+        bool "Keep the real-time bridge control path cache-safe"
+        default n
+        depends on !ENGINE_THREAD_SAFE
+        select MCPWM_CTRL_FUNC_IN_IRAM
+        select GPIO_CTRL_FUNC_IN_IRAM
+        help
+            Place set_speed, coast, brake, state readback, and their private
+            helpers in IRAM. Also selects the ESP-IDF MCPWM/GPIO cache-safe
+            control options, including internal allocation of MCPWM objects.
+            A component linker fragment also places the MCPWM force-level
+            operation in IRAM because ESP-IDF 6.0 does not include it in its
+            MCPWM control-function selection.
+            The caller-owned engine_config and task stack must still reside in
+            internal RAM. Initialization and current-sense/reporting functions
+            are not covered. This option increases internal-memory usage.
 
     config ENGINE_PWM_FREQ_HZ
         int "PWM Frequency (Hz)"
         default 20000
         range 1000 1000000
         help
-            Frequency of the PWM signal in Hz. Default is 20000 (20 kHz).
+            Requested edge-aligned PWM frequency. The driver uses an 80 MHz
+            timer and integer period ticks, so the actual duty resolution is
+            80000000 divided by this value. Default: 20 kHz.
 
     config ENGINE_PIN_RPWM
         int "GPIO for RPWM (Forward)"
         default 1
         range 0 48
         help
-            GPIO number used for Forward PWM control (RPWM).
+            GPIO connected to module RPWM. Positive signed commands use this
+            MCPWM output while LPWM is forced low.
 
     config ENGINE_PIN_LPWM
         int "GPIO for LPWM (Reverse)"
         default 2
         range 0 48
         help
-            GPIO number used for Reverse PWM control (LPWM).
+            GPIO connected to module LPWM. Negative signed commands use this
+            MCPWM output while RPWM is forced low.
 
     config ENGINE_PIN_ENABLE
         int "GPIO for Enable (R_EN/L_EN)"
@@ -34,16 +57,27 @@ menu "Engine Driver Configuration"
         range 0 48
         help
             GPIO connected to both R_EN and L_EN. It is required so COAST can
-            immediately disable both BTS7960 half bridges.
+            immediately disable both BTS7960 half bridges. BRAKE and DRIVE set
+            this output high.
+
+    config ENGINE_DIRECTION_DEAD_TIME_US
+        int "Dead time before reversing direction (us)"
+        range 0 100000
+        default 50
+        help
+            Time with both PWM outputs low and R_EN/L_EN disabled before the
+            opposite direction is enabled. This protects the power stage and
+            is applied only when a nonzero drive command changes sign. The wait
+            is blocking in the calling task.
 
     config ENGINE_CURRENT_SENSE_ENABLE
-        bool "Enable continuous BTS7960 R_IS acquisition"
+        bool "Enable continuous BTS7960 R_IS/L_IS acquisition"
         default y
         help
-            Sample R_IS continuously with ADC1 and DMA. A low-priority Core 0
-            task calculates one frame per millisecond and accumulates the
-            longer diagnostic window. This is optional and does not execute an
-            ADC conversion in the motor-control task.
+            Sample R_IS and L_IS continuously with ADC1 and DMA. A low-priority
+            Core 0 task calculates one signed frame per millisecond and
+            accumulates both diagnostic channels. This is optional and does not
+            execute an ADC conversion in the motor-control task.
 
     config ENGINE_CURRENT_SENSE_GPIO_R_IS
         int "GPIO for conditioned R_IS"
@@ -54,32 +88,52 @@ menu "Engine Driver Configuration"
             ESP32-S3 ADC1 GPIO connected after the divider, RC filter, and
             external input clamps.
 
+    config ENGINE_CURRENT_SENSE_GPIO_L_IS
+        int "GPIO for conditioned L_IS"
+        range 1 10
+        default 5
+        depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            ESP32-S3 ADC1 GPIO connected after an independent divider, RC
+            filter, and external input clamps for L_IS. It must differ from the
+            R_IS GPIO.
+
     config ENGINE_CURRENT_SENSE_SAMPLE_HZ
-        int "Continuous ADC sample frequency (Hz)"
-        range 10000 80000
+        int "Continuous ADC sample frequency per channel (Hz)"
+        range 1000 40000
         default 25000
         depends on ENGINE_CURRENT_SENSE_ENABLE
         help
             Must be an integer multiple of 1000 so each DMA frame represents
-            one millisecond. At 25 ksample/s each frame contains 25 samples.
+            one millisecond. At 25 ksample/s, each frame contains 25 samples
+            from each channel and the aggregate ADC rate is 50 ksample/s.
 
     config ENGINE_CURRENT_SENSE_BOARD_RESISTOR_OHMS
         int "R_IS resistor fitted on the IBT-2 (ohms)"
         range 1 100000
         default 10000
         depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            Resistance already fitted between each module I_IS output and
+            ground. It participates in the loaded transimpedance calculation.
 
     config ENGINE_CURRENT_SENSE_SERIES_RESISTOR_OHMS
         int "Series resistor from R_IS to ADC node (ohms)"
         range 1 100000
         default 10000
         depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            External resistor between each module I_IS output and its dedicated
+            ADC node. R_IS and L_IS require independent networks.
 
     config ENGINE_CURRENT_SENSE_PULLDOWN_RESISTOR_OHMS
         int "Pulldown resistor from ADC node to GND (ohms)"
         range 1 100000
         default 1000
         depends on ENGINE_CURRENT_SENSE_ENABLE
+        help
+            External resistor from each ADC node to ground. Together with the
+            series resistor it attenuates the module I_IS voltage.
 
     config ENGINE_CURRENT_SENSE_RATIO
         int "Nominal BTS7960 load-to-sense current ratio"
